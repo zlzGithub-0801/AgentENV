@@ -43,9 +43,10 @@ RUNTIME_DIR="/run/aenv"
 
 ARCH="$(uname -m)"
 case "$ARCH" in
-    x86_64) ARCH_TAG="x86_64" ;;
+    x86_64|amd64) ARCH_TAG="x86_64" ;;
+    aarch64|arm64) ARCH_TAG="aarch64" ;;
     *)
-        echo "error: unsupported architecture: $ARCH (server requires x86_64)" >&2
+        echo "error: unsupported architecture: $ARCH (supported: x86_64/amd64, aarch64/arm64)" >&2
         exit 1
         ;;
 esac
