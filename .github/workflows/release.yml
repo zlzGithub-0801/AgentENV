@@ -61,8 +61,16 @@ jobs:
           path: dist/${{ matrix.asset_name }}
 
   build-server:
-    name: Build server (linux-x86_64)
-    runs-on: ubuntu-24.04
+    name: Build server (linux-${{ matrix.arch }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            arch: x86_64
+          - os: ubuntu-24.04-arm
+            arch: aarch64
     steps:
       - uses: actions/checkout@v6
 
@@ -110,12 +118,12 @@ jobs:
           mkdir -p dist/bundle/etc/overlaybd
           cp "$STAGE_DEPS/overlaybd/etc/overlaybd/overlaybd.json" dist/bundle/etc/overlaybd/overlaybd.json
           rm -rf "$STAGE_HOME"
-          tar -czf dist/aenv-server-linux-x86_64.tar.gz -C dist/bundle .
+          tar -czf "dist/aenv-server-linux-${{ matrix.arch }}.tar.gz" -C dist/bundle .
 
       - uses: actions/upload-artifact@v7
         with:
-          name: server-bundle
-          path: dist/aenv-server-linux-x86_64.tar.gz
+          name: server-bundle-${{ matrix.arch }}
+          path: dist/aenv-server-linux-${{ matrix.arch }}.tar.gz
 
   release:
     name: Create GitHub Release
@@ -155,6 +163,7 @@ jobs:
             dist/aenv-darwin-x86_64
             dist/aenv-darwin-aarch64
             dist/aenv-server-linux-x86_64.tar.gz
+            dist/aenv-server-linux-aarch64.tar.gz
 
       - uses: actions/upload-artifact@v7
         with:
