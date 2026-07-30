@@ -61,8 +61,17 @@ jobs:
           path: dist/${{ matrix.asset_name }}
 
   build-server:
-    name: Build server (linux-x86_64)
-    runs-on: ubuntu-24.04
+    name: Build server (linux-${{ matrix.arch }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            arch: x86_64
+          - os: ubuntu-24.04-arm
+            arch: aarch64
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
 
@@ -110,12 +119,12 @@ jobs:
           mkdir -p dist/bundle/etc/overlaybd
           cp "$STAGE_DEPS/overlaybd/etc/overlaybd/overlaybd.json" dist/bundle/etc/overlaybd/overlaybd.json
           rm -rf "$STAGE_HOME"
-          tar -czf dist/aenv-server-linux-x86_64.tar.gz -C dist/bundle .
+          tar -czf "dist/aenv-server-linux-${{ matrix.arch }}.tar.gz" -C dist/bundle .
 
       - uses: actions/upload-artifact@v7
         with:
-          name: server-bundle
-          path: dist/aenv-server-linux-x86_64.tar.gz
+          name: server-bundle-${{ matrix.arch }}
+          path: dist/aenv-server-linux-${{ matrix.arch }}.tar.gz
 
   release:
     name: Create GitHub Release
@@ -155,24 +164,36 @@ jobs:
             dist/aenv-darwin-x86_64
             dist/aenv-darwin-aarch64
             dist/aenv-server-linux-x86_64.tar.gz
+            dist/aenv-server-linux-aarch64.tar.gz
 
       - uses: actions/upload-artifact@v7
         with:
           name: dist
           path: dist/
 
-  docker-publish:
-    name: Build and push Docker images
+  docker-publish-images:
+    name: Build Docker image (${{ matrix.arch }})
     needs: release
-    runs-on: ubuntu-24.04
+    runs-on: ${{ matrix.os }}
     permissions:
       contents: read
       packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            arch: amd64
+            platform: linux/amd64
+          - os: ubuntu-24.04-arm
+            arch: arm64
+            platform: linux/arm64
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
 
       - name: Set lowercase owner
-        run: echo "OWNER=${GITHUB_REPOSITORY_OWNER,,}" >> $GITHUB_ENV
+        run: echo "OWNER=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -189,8 +210,45 @@ jobs:
         with:
           context: .
           file: deploy/docker/Dockerfile.agentenv
+          platforms: ${{ matrix.platform }}
           push: true
-          cache-from: type=gha,scope=agentenv-runtime
           tags: |
-            ghcr.io/${{ env.OWNER }}/aenv-server:${{ github.ref_name }}
-            ghcr.io/${{ env.OWNER }}/aenv-server:latest
+            ghcr.io/${{ env.OWNER }}/aenv-server:${{ github.ref_name }}-${{ matrix.arch }}
+
+  docker-publish-manifest:
+    name: Publish multi-architecture Docker image
+    needs: docker-build
+    runs-on: ubuntu-24.04
+    permissions:
+      packages: write
+    timeout-minutes: 30
+    steps:
+      - name: Set lowercase owner
+        run: echo "OWNER=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create multi-architecture manifest
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${OWNER}/aenv-server"
+          version="${GITHUB_REF_NAME}"
+
+          docker buildx imagetools create \
+            --tag "${image}:${version}" \
+            --tag "${image}:latest" \
+            "${image}:${version}-amd64" \
+            "${image}:${version}-arm64"
+
+      - name: Inspect published image
+        run: |
+          docker buildx imagetools inspect \
+            "ghcr.io/${OWNER}/aenv-server:${GITHUB_REF_NAME}"

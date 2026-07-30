@@ -71,7 +71,7 @@ pub async fn ensure(config: &AppConfig, deps_path: &Path) -> Result<()> {
     std::fs::create_dir_all(deps_path)?;
 
     ensure_firecracker(config, manifest, &arch).await?;
-    ensure_kernel(config, manifest).await?;
+    ensure_kernel(config, manifest, &arch).await?;
 
     // regctl is a runtime dependency for all registry access, not just tools
     // drive extraction, so it remains provisioned for explicit tools drives.
@@ -129,7 +129,11 @@ async fn ensure_firecracker(
     Ok(())
 }
 
-async fn ensure_kernel(config: &AppConfig, manifest: &SetupDependencyManifest) -> Result<()> {
+async fn ensure_kernel(
+    config: &AppConfig,
+    manifest: &SetupDependencyManifest,
+    arch: &str,
+) -> Result<()> {
     if let Some(kernel_path) = config.kernel.image_path.as_deref() {
         return validate_explicit_file("kernel.image_path", kernel_path, false);
     }
@@ -146,7 +150,10 @@ async fn ensure_kernel(config: &AppConfig, manifest: &SetupDependencyManifest) -
         .as_deref()
         .unwrap_or(&manifest.kernel.version);
     let kernel_url_template = config.kernel.url.as_deref().unwrap_or(&manifest.kernel.url);
-    let kernel_url = resolve_url(kernel_url_template, &[("version", kernel_version)]);
+    let kernel_url = resolve_url(
+        kernel_url_template,
+        &[("version", kernel_version), ("arch", arch)],
+    );
     download_file(&kernel_url, &kernel_path).await
 }
 
@@ -844,7 +851,7 @@ mod tests {
         ensure_firecracker(&config, bundled_manifest(), "x86_64")
             .await
             .expect("accept explicit firecracker");
-        ensure_kernel(&config, bundled_manifest())
+        ensure_kernel(&config, bundled_manifest(), "x86_64")
             .await
             .expect("accept explicit kernel");
         ensure_tools(&config, &deps_path, bundled_manifest()).expect("import explicit tools");

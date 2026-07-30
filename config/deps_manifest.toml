@@ -1,10 +1,10 @@
 [firecracker]
 version = "1.15.1-patch-v1"
-url = "https://pub-4ee15c400f554ab7a9eac3f5bc8f53de.r2.dev/firecracker-{version}-{arch}.tgz"
+url = "https://github.com/kvcache-ai/firecracker/releases/download/aenv-deps/firecracker-{version}-{arch}.tgz"
 
 [kernel]
 version = "vmlinux-6.1.175"
-url = "https://pub-4ee15c400f554ab7a9eac3f5bc8f53de.r2.dev/{version}"
+url = "https://github.com/kvcache-ai/firecracker/releases/download/aenv-deps/{version}-{arch}"
 
 [tools]
 version = "0.1.0"
