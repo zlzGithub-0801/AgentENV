@@ -1,0 +1,25 @@
+{
+  "branches": {
+    "coverage": "-",
+    "missed": 0,
+    "total": 0
+  },
+  "functions": {
+    "coverage": "71.93%",
+    "missed": 1366,
+    "total": 4866
+  },
+  "generated_at": "2026-08-03T14:02:09Z",
+  "lines": {
+    "coverage": "75.81%",
+    "missed": 9647,
+    "total": 39877
+  },
+  "package": "workspace",
+  "regions": {
+    "coverage": "74.86%",
+    "missed": 14002,
+    "total": 55704
+  },
+  "run_url": "https://github.com/zlzGithub-0801/AgentENV/actions/runs/30818724766"
+}
