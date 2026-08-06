@@ -1,0 +1,510 @@
+name: Static Linux release probe
+
+on:
+  push:
+    branches:
+      - feat/static-linux-release
+
+env:
+  PROBE_TAG: static-linux-${{ github.run_number }}
+
+jobs:
+  build-linux:
+    name: Build Linux release (${{ matrix.arch }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            arch: x86_64
+            rust_target: x86_64-unknown-linux-musl
+            zig_target: x86_64-linux-musl
+            openssl_target: linux-x86_64
+            modes: kvm pvm
+            arch_flags: ""
+          - os: ubuntu-24.04-arm
+            arch: aarch64
+            rust_target: aarch64-unknown-linux-musl
+            zig_target: aarch64-linux-musl
+            openssl_target: linux-aarch64
+            modes: kvm
+            arch_flags: -mno-outline-atomics
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install native build prerequisites
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            clang \
+            cmake \
+            curl \
+            file \
+            libclang-dev \
+            libprotobuf-dev \
+            linux-libc-dev \
+            lld \
+            make \
+            ninja-build \
+            perl \
+            pkg-config \
+            protobuf-compiler \
+            xz-utils
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: static-linux-release-${{ matrix.rust_target }}
+
+      - name: Build static Linux binaries
+        env:
+          ZIG_VERSION: 0.15.2
+          OPENSSL_VERSION: 3.5.7
+        run: |
+          set -euo pipefail
+
+          arch_flags=()
+          if [[ -n "${{ matrix.arch_flags }}" ]]; then
+            arch_flags+=("${{ matrix.arch_flags }}")
+          fi
+          arch_flags_text="${arch_flags[*]:-}"
+
+          work_dir="$(mktemp -d "$RUNNER_TEMP/agentenv-static-release.XXXXXXXX")"
+          trap 'rm -rf "$work_dir"' EXIT
+
+          zig_archive="zig-${{ matrix.arch }}-linux-$ZIG_VERSION.tar.xz"
+          zig_dir="$work_dir/zig-$ZIG_VERSION"
+          curl -fsSL --retry 5 \
+            "https://ziglang.org/download/$ZIG_VERSION/$zig_archive" \
+            -o "$work_dir/$zig_archive"
+          mkdir -p "$zig_dir"
+          tar -xJf "$work_dir/$zig_archive" -C "$zig_dir" --strip-components=1
+          zig="$zig_dir/zig"
+
+          toolchain_dir="$work_dir/toolchain"
+          mkdir -p "$toolchain_dir"
+
+          write_compiler_wrapper() {
+            local output=$1
+            local mode=$2
+            local compiler_template
+            compiler_template='#!/usr/bin/env bash
+          set -euo pipefail
+          args=()
+          skip_next=false
+          for arg in "$@"; do
+              if $skip_next; then
+                  skip_next=false
+                  continue
+              fi
+              case "$arg" in
+                  --target=*) continue ;;
+                  --target) skip_next=true; continue ;;
+                  *) args+=("$arg") ;;
+              esac
+          done
+          exec "ZIG_PATH" COMPILER_MODE -target ZIG_TARGET ARCH_FLAGS "${args[@]}"
+          '
+            printf '%s' "$compiler_template" > "$output"
+            sed -i \
+              "s|ZIG_PATH|$zig|g; s|COMPILER_MODE|$mode|g; s|ZIG_TARGET|${{ matrix.zig_target }}|g; s|ARCH_FLAGS|$arch_flags_text|g" \
+              "$output"
+            chmod +x "$output"
+          }
+
+          write_compiler_wrapper "$toolchain_dir/musl-cc" cc
+          write_compiler_wrapper "$toolchain_dir/musl-cxx" c++
+
+          for tool_name in ar ranlib; do
+            tool_wrapper="$toolchain_dir/musl-$tool_name"
+            printf '#!/bin/sh\nexec "%s" %s "$@"\n' "$zig" "$tool_name" > "$tool_wrapper"
+            chmod +x "$tool_wrapper"
+          done
+
+          linker_template='#!/usr/bin/env bash
+          set -euo pipefail
+          args=()
+          skip_next=false
+          for arg in "$@"; do
+              if $skip_next; then
+                  skip_next=false
+                  continue
+              fi
+              case "$arg" in
+                  --target=*) continue ;;
+                  --target) skip_next=true; continue ;;
+                  */self-contained/*crt*.o) continue ;;
+                  -lstdc++) args+=("-lc++") ;;
+                  *) args+=("$arg") ;;
+              esac
+          done
+          exec "ZIG_PATH" c++ -target ZIG_TARGET ARCH_FLAGS "${args[@]}"
+          '
+          printf '%s' "$linker_template" > "$toolchain_dir/musl-linker"
+          sed -i \
+            "s|ZIG_PATH|$zig|g; s|ZIG_TARGET|${{ matrix.zig_target }}|g; s|ARCH_FLAGS|$arch_flags_text|g" \
+            "$toolchain_dir/musl-linker"
+          chmod +x "$toolchain_dir/musl-linker"
+
+          target_env_key="${{ matrix.rust_target }}"
+          target_env_key="${target_env_key//-/_}"
+          target_key="${{ matrix.rust_target }}"
+          target_key="${target_key^^}"
+          target_key="${target_key//-/_}"
+          export "CC_${target_env_key}=$toolchain_dir/musl-cc"
+          export "CXX_${target_env_key}=$toolchain_dir/musl-cxx"
+          export "AR_${target_env_key}=$toolchain_dir/musl-ar"
+          export "CARGO_TARGET_${target_key}_LINKER=$toolchain_dir/musl-linker"
+
+          # BEGIN 可删除标记: 合并到正式 release.yml 后可删除的工具链探测
+          printf '%s\n' \
+            '#include <locale>' \
+            '#include <random>' \
+            '#include <string>' \
+            'int main() { std::random_device r; std::locale l; std::string s = "musl"; return s.size() == 4 ? 0 : 1; }' \
+            > "$work_dir/probe.cc"
+          "$toolchain_dir/musl-cxx" -static "$work_dir/probe.cc" -o "$work_dir/probe-cxx"
+          file "$work_dir/probe-cxx"
+          # END 可删除标记
+
+          openssl_source_dir="$work_dir/openssl-$OPENSSL_VERSION"
+          openssl_install_dir="$work_dir/openssl-musl-${{ matrix.arch }}"
+          openssl_archive="$work_dir/openssl-$OPENSSL_VERSION.tar.gz"
+          curl -fsSL --retry 5 \
+            "https://www.openssl.org/source/openssl-$OPENSSL_VERSION.tar.gz" \
+            -o "$openssl_archive"
+          tar -xzf "$openssl_archive" -C "$work_dir"
+
+          (
+            cd "$openssl_source_dir"
+            CC="$toolchain_dir/musl-cc" \
+              AR="$toolchain_dir/musl-ar" \
+              RANLIB="$toolchain_dir/musl-ranlib" \
+              ./Configure \
+              "${{ matrix.openssl_target }}" \
+              no-shared \
+              no-tests \
+              no-module \
+              --prefix="$openssl_install_dir" \
+              --libdir=lib \
+              "${arch_flags[@]}"
+            make -j"$(nproc)" build_libs
+            mkdir -p "$openssl_install_dir/include" "$openssl_install_dir/lib"
+            cp -a include/openssl "$openssl_install_dir/include/"
+            cp -a libcrypto.a libssl.a "$openssl_install_dir/lib/"
+          )
+
+          export OPENSSL_STATIC=1
+          export OPENSSL_DIR="$openssl_install_dir"
+          export OPENSSL_LIB_DIR="$openssl_install_dir/lib"
+          export OPENSSL_INCLUDE_DIR="$openssl_install_dir/include"
+          export PKG_CONFIG_ALLOW_CROSS=1
+
+          cargo build --release --locked --target "${{ matrix.rust_target }}" -p aenv
+          cargo build --release --locked --target "${{ matrix.rust_target }}" \
+            -p uvm-ublk-daemon --bin uvm-ublk-daemon
+          cargo build --release --locked --target "${{ matrix.rust_target }}" \
+            -p agentenv --bin server
+
+          mkdir -p dist
+          target_dir="target/${{ matrix.rust_target }}/release"
+          cp "$target_dir/aenv" "dist/aenv-linux-${{ matrix.arch }}"
+
+          # BEGIN 可删除标记: 合并到正式 release.yml 后可删除的原生 ELF 门禁
+          for binary in \
+            "dist/aenv-linux-${{ matrix.arch }}" \
+            "$target_dir/server" \
+            "$target_dir/uvm-ublk-daemon"; do
+            test -x "$binary"
+            file "$binary"
+            if readelf -l "$binary" | grep -q INTERP; then
+              echo "ERROR: $binary contains an ELF interpreter" >&2
+              exit 1
+            fi
+            if readelf -d "$binary" 2>&1 | grep -q NEEDED; then
+              echo "ERROR: $binary contains dynamic dependencies" >&2
+              readelf -d "$binary" >&2
+              exit 1
+            fi
+          done
+          # END 可删除标记
+
+      - name: Stage Linux release artifacts
+        run: |
+          set -euo pipefail
+          target_dir="target/${{ matrix.rust_target }}/release"
+
+          for mode in ${{ matrix.modes }}; do
+            bundle="dist/bundle-$mode"
+            mkdir -p "$bundle/ublk"
+            cp "$target_dir/server" "$bundle/server"
+            cp "$target_dir/uvm-ublk-daemon" "$bundle/ublk/uvm-ublk-daemon"
+            cp config/default.toml "$bundle/default.toml"
+
+            sed -i \
+              "s/^virtualization_mode = .*/virtualization_mode = \"$mode\"/" \
+              "$bundle/default.toml"
+            grep -qx "virtualization_mode = \"$mode\"" "$bundle/default.toml"
+
+            stage_home="$PWD/dist/tmp-aenv-$mode"
+            stage_deps="$stage_home/deps"
+            mkdir -p "$stage_home"
+            AENV_VIRTUALIZATION_MODE="$mode" \
+              AENV_HOME_PATH="$stage_home" \
+              "$bundle/server" --setup-only
+
+            test -d "$stage_deps"
+            test -f "$stage_deps/overlaybd/etc/overlaybd/overlaybd.json"
+            cp -a "$stage_deps" "$bundle/deps"
+            mkdir -p "$bundle/etc/overlaybd"
+            cp \
+              "$stage_deps/overlaybd/etc/overlaybd/overlaybd.json" \
+              "$bundle/etc/overlaybd/overlaybd.json"
+
+            # BEGIN 可删除标记: 合并到正式 release.yml 后可删除的完整 bundle ELF 门禁
+            while IFS= read -r -d '' candidate; do
+              if file "$candidate" | grep -q 'ELF'; then
+                file "$candidate"
+                if readelf -l "$candidate" | grep -q INTERP; then
+                  echo "ERROR: $candidate contains an ELF interpreter" >&2
+                  exit 1
+                fi
+                if readelf -d "$candidate" 2>&1 | grep -q NEEDED; then
+                  echo "ERROR: $candidate contains dynamic dependencies" >&2
+                  readelf -d "$candidate" >&2
+                  exit 1
+                fi
+              fi
+            done < <(find "$bundle" -type f -print0)
+            # END 可删除标记
+
+            archive="dist/aenv-server-linux-${{ matrix.arch }}.tar.gz"
+            if [[ "$mode" == pvm ]]; then
+              archive="dist/aenv-server-linux-${{ matrix.arch }}-pvm.tar.gz"
+            fi
+            tar -czf "$archive" -C "$bundle" .
+            rm -rf "$stage_home" "$bundle"
+          done
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: linux-release-${{ matrix.arch }}
+          path: |
+            dist/aenv-linux-${{ matrix.arch }}
+            dist/aenv-server-linux-${{ matrix.arch }}*.tar.gz
+          if-no-files-found: error
+
+  build-darwin-cli:
+    name: Build aenv (${{ matrix.asset_name }})
+    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-apple-darwin
+            asset_name: aenv-darwin-x86_64
+          - target: aarch64-apple-darwin
+            asset_name: aenv-darwin-aarch64
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install system dependencies
+        run: brew install protobuf
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: static-linux-release-${{ matrix.target }}
+
+      - name: Build and stage aenv
+        run: |
+          set -euo pipefail
+          cargo build --release --locked -p aenv --target "${{ matrix.target }}"
+          mkdir -p dist
+          cp \
+            "target/${{ matrix.target }}/release/aenv" \
+            "dist/${{ matrix.asset_name }}"
+          strip "dist/${{ matrix.asset_name }}" || true
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.asset_name }}
+          path: dist/${{ matrix.asset_name }}
+          if-no-files-found: error
+
+  publish-release:
+    name: Publish downloadable probe release
+    needs: [build-linux, build-darwin-cli]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Verify release asset set
+        run: |
+          set -euo pipefail
+          assets=(
+            dist/aenv-linux-x86_64
+            dist/aenv-linux-aarch64
+            dist/aenv-darwin-x86_64
+            dist/aenv-darwin-aarch64
+            dist/aenv-server-linux-x86_64-pvm.tar.gz
+            dist/aenv-server-linux-x86_64.tar.gz
+            dist/aenv-server-linux-aarch64.tar.gz
+          )
+          for asset in "${assets[@]}"; do
+            test -s "$asset" || { echo "ERROR: missing release asset: $asset" >&2; exit 1; }
+          done
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          # BEGIN 可删除标记: 正式 release 直接使用推送的版本 tag
+          tag_name: ${{ env.PROBE_TAG }}
+          target_commitish: ${{ github.sha }}
+          name: Static Linux release probe ${{ github.run_number }}
+          prerelease: true
+          # END 可删除标记
+          generate_release_notes: true
+          files: |
+            dist/aenv-linux-x86_64
+            dist/aenv-linux-aarch64
+            dist/aenv-darwin-x86_64
+            dist/aenv-darwin-aarch64
+            dist/aenv-server-linux-x86_64-pvm.tar.gz
+            dist/aenv-server-linux-x86_64.tar.gz
+            dist/aenv-server-linux-aarch64.tar.gz
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+
+  docker-publish-kvm-images:
+    name: Build KVM Docker image (${{ matrix.arch }})
+    needs: publish-release
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      packages: write
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            arch: amd64
+            platform: linux/amd64
+          - os: ubuntu-24.04-arm
+            arch: arm64
+            platform: linux/arm64
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set lowercase owner
+        run: echo "OWNER=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push KVM image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: deploy/docker/Dockerfile.agentenv
+          platforms: ${{ matrix.platform }}
+          push: true
+          build-args: |
+            AENV_VIRTUALIZATION_MODE=kvm
+          tags: |
+            ghcr.io/${{ env.OWNER }}/aenv-server:${{ env.PROBE_TAG }}-${{ matrix.arch }}
+
+  docker-publish-kvm-manifest:
+    name: Publish multi-architecture KVM Docker image
+    needs: docker-publish-kvm-images
+    runs-on: ubuntu-24.04
+    permissions:
+      packages: write
+    timeout-minutes: 30
+
+    steps:
+      - name: Set lowercase owner
+        run: echo "OWNER=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create and inspect KVM manifest
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${OWNER}/aenv-server"
+          docker buildx imagetools create \
+            --tag "${image}:${PROBE_TAG}" \
+            --tag "${image}:static-probe-latest" \
+            "${image}:${PROBE_TAG}-amd64" \
+            "${image}:${PROBE_TAG}-arm64"
+          docker buildx imagetools inspect "${image}:${PROBE_TAG}"
+
+  docker-publish-pvm:
+    name: Build and push PVM Docker image (amd64)
+    needs: publish-release
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set lowercase owner
+        run: echo "OWNER=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push PVM image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: deploy/docker/Dockerfile.agentenv
+          platforms: linux/amd64
+          push: true
+          cache-from: type=gha,scope=agentenv-runtime
+          build-args: |
+            AENV_VIRTUALIZATION_MODE=pvm
+          tags: |
+            ghcr.io/${{ env.OWNER }}/aenv-server:${{ env.PROBE_TAG }}-pvm
+            ghcr.io/${{ env.OWNER }}/aenv-server:static-probe-latest-pvm
