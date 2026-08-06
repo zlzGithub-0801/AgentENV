@@ -361,6 +361,7 @@ jobs:
           file: deploy/docker/Dockerfile.agentenv
           platforms: linux/amd64
           push: true
+          cache-from: type=gha,scope=agentenv-runtime
           build-args: |
             AENV_VIRTUALIZATION_MODE=pvm
           tags: |
