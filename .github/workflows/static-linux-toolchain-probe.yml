@@ -1,51 +1,13 @@
-name: Release
+name: Linux release build probe
 
 on:
   push:
-    tags:
-      - "v*"
+    branches:
+      - feat/static-linux-release
 
 jobs:
-  validate-version:
-    name: Validate release version
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v6
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - name: Verify tag matches package versions
-        env:
-          RELEASE_TAG: ${{ github.ref_name }}
-        run: |
-          python3 - "${RELEASE_TAG#v}" <<'PY'
-          import json
-          import subprocess
-          import sys
-
-          release_version = sys.argv[1]
-          metadata = json.loads(
-              subprocess.check_output(
-                  ["cargo", "metadata", "--no-deps", "--format-version", "1"],
-                  text=True,
-              )
-          )
-          package_versions = {
-              package["name"]: package["version"] for package in metadata["packages"]
-          }
-
-          for package_name in ("agentenv", "aenv"):
-              package_version = package_versions[package_name]
-              if package_version != release_version:
-                  raise SystemExit(
-                      f"{package_name} version {package_version} does not match "
-                      f"release tag v{release_version}"
-                  )
-          PY
-
   build-cli:
     name: Build CLI (${{ matrix.asset_name }})
-    needs: validate-version
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -67,6 +29,7 @@ jobs:
             target: aarch64-apple-darwin
             features: ''
             asset_name: aenv-darwin-aarch64
+
     steps:
       - uses: actions/checkout@v6
 
@@ -92,6 +55,26 @@ jobs:
           OPENSSL_STATIC: ${{ runner.os == 'Linux' && '1' || '' }}
         run: cargo build --release --locked -p aenv ${{ matrix.features }} ${{ matrix.target && format('--target {0}', matrix.target) || '' }}
 
+      - name: Audit Linux CLI dependencies
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          binary=target/release/aenv
+          ldd_output="$(ldd "$binary")"
+          printf '%s\n' "$ldd_output"
+          ! grep -q 'not found' <<<"$ldd_output"
+          ! grep -Eq 'lib(ssl|crypto)\.so' <<<"$ldd_output"
+
+          while read -r dependency; do
+            dependency="${dependency##*/}"
+            case "$dependency" in
+              linux-vdso.so.* | ld-linux-*.so.* | libc.so.* | libdl.so.* | \
+              libgcc_s.so.* | libm.so.* | libpthread.so.* | librt.so.* | \
+              libstdc++.so.* | libutil.so.*) ;;
+              *) echo "ERROR: non-baseline dependency: $dependency"; exit 1 ;;
+            esac
+          done < <(awk 'NF && $1 != "statically" { print $1 }' <<<"$ldd_output")
+
       - name: Stage artifact
         run: |
           mkdir -p dist
@@ -106,7 +89,6 @@ jobs:
 
   build-server:
     name: Build server (linux-${{ matrix.arch }})
-    needs: validate-version
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -119,6 +101,7 @@ jobs:
             arch: aarch64
             modes: kvm
     timeout-minutes: 30
+
     steps:
       - uses: actions/checkout@v6
 
@@ -140,6 +123,26 @@ jobs:
             -p agentenv --bin server \
             -p uvm-ublk-daemon --bin uvm-ublk-daemon \
             --features vendored-openssl
+
+      - name: Audit Linux server dependencies
+        run: |
+          set -euo pipefail
+          for binary in target/release/server target/release/uvm-ublk-daemon; do
+            ldd_output="$(ldd "$binary")"
+            printf '%s\n' "$ldd_output"
+            ! grep -q 'not found' <<<"$ldd_output"
+            ! grep -Eq 'lib(ssl|crypto)\.so' <<<"$ldd_output"
+
+            while read -r dependency; do
+              dependency="${dependency##*/}"
+              case "$dependency" in
+                linux-vdso.so.* | ld-linux-*.so.* | libc.so.* | libdl.so.* | \
+                libgcc_s.so.* | libm.so.* | libpthread.so.* | librt.so.* | \
+                libstdc++.so.* | libutil.so.*) ;;
+                *) echo "ERROR: $binary has non-baseline dependency: $dependency"; exit 1 ;;
+              esac
+            done < <(awk 'NF && $1 != "statically" { print $1 }' <<<"$ldd_output")
+          done
 
       - name: Stage artifacts
         run: |
@@ -180,9 +183,22 @@ jobs:
               echo "ERROR: missing staged overlaybd default config for $MODE"
               exit 1
             }
+
+            for tool in "$STAGE_DEPS"/overlaybd/bin/*; do
+              if file "$tool" | grep -q 'ELF'; then
+                file "$tool"
+                if readelf -l "$tool" | grep -q INTERP || \
+                   readelf -d "$tool" 2>&1 | grep -q NEEDED; then
+                  echo "ERROR: OverlayBD tool is dynamically linked: $tool"
+                  exit 1
+                fi
+              fi
+            done
+
             cp -a "$STAGE_DEPS" "$BUNDLE/deps"
             mkdir -p "$BUNDLE/etc/overlaybd"
-            cp "$STAGE_DEPS/overlaybd/etc/overlaybd/overlaybd.json" "$BUNDLE/etc/overlaybd/overlaybd.json"
+            cp "$STAGE_DEPS/overlaybd/etc/overlaybd/overlaybd.json" \
+              "$BUNDLE/etc/overlaybd/overlaybd.json"
             rm -rf "$STAGE_HOME"
             ARCHIVE="dist/aenv-server-linux-${{ matrix.arch }}.tar.gz"
             if [[ "$MODE" == "pvm" ]]; then
@@ -195,53 +211,29 @@ jobs:
         with:
           name: server-bundles-${{ matrix.arch }}
           path: dist/aenv-server-linux-${{ matrix.arch }}*.tar.gz
+          if-no-files-found: error
 
   release:
-    name: Create GitHub Release
+    name: Create probe GitHub Release
     needs: [build-cli, build-server]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
-      pull-requests: read
     steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-
       - name: Download all artifacts
         uses: actions/download-artifact@v7
         with:
           path: dist/
           merge-multiple: true
 
-      - name: Generate release notes
-        id: git-cliff
-        uses: orhun/git-cliff-action@f50e11560dce63f7c33227798f90b924471a88b5  # v4.8.0
-        with:
-          args: --latest --strip header
-        env:
-          OUTPUT: CHANGES.md
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_REPO: ${{ github.repository }}
-
-      - name: Prepend documentation links
-        env:
-          RELEASE_TAG: ${{ github.ref_name }}
-        run: |
-          set -euo pipefail
-
-          {
-            printf '📖 Documentation for this release: '
-            printf 'https://kvcache-ai.github.io/AgentENV/%s/\n' "$RELEASE_TAG"
-            printf '\n---\n\n'
-            cat CHANGES.md
-          } > CHANGES.md.tmp
-          mv CHANGES.md.tmp CHANGES.md
-
-      - name: Create GitHub Release
+      - name: Create prerelease
         uses: softprops/action-gh-release@v3
         with:
-          body_path: CHANGES.md
+          tag_name: static-linux-probe-${{ github.run_number }}-${{ github.run_attempt }}
+          target_commitish: ${{ github.sha }}
+          name: Static Linux probe ${{ github.run_number }}-${{ github.run_attempt }}
+          prerelease: true
+          generate_release_notes: true
           files: |
             dist/aenv-linux-x86_64
             dist/aenv-linux-aarch64
@@ -256,9 +248,9 @@ jobs:
           name: dist
           path: dist/
 
-  docker-publish-kvm-images:
-    name: Build KVM Docker image (${{ matrix.arch }})
-    needs: release
+  build-docker:
+    name: Build Docker image (${{ matrix.mode }}-${{ matrix.arch }})
+    needs: [build-cli, build-server]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -267,113 +259,32 @@ jobs:
           - os: ubuntu-24.04
             arch: amd64
             platform: linux/amd64
+            mode: kvm
           - os: ubuntu-24.04-arm
             arch: arm64
             platform: linux/arm64
+            mode: kvm
+          - os: ubuntu-24.04
+            arch: amd64
+            platform: linux/amd64
+            mode: pvm
     permissions:
       contents: read
-      packages: write
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
 
-      - name: Set lowercase owner
-        run: echo "OWNER=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
-      - name: Log in to GHCR
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and push server image
+      - name: Build server image
         uses: docker/build-push-action@v7
         with:
           context: .
           file: deploy/docker/Dockerfile.agentenv
           platforms: ${{ matrix.platform }}
-          push: true
+          push: false
           build-args: |
-            AENV_VIRTUALIZATION_MODE=kvm
+            AENV_VIRTUALIZATION_MODE=${{ matrix.mode }}
           tags: |
-            ghcr.io/${{ env.OWNER }}/aenv-server:${{ github.ref_name }}-${{ matrix.arch }}
-
-  docker-publish-kvm-manifest:
-    name: Publish multi-architecture KVM Docker image
-    needs: docker-publish-kvm-images
-    runs-on: ubuntu-24.04
-    permissions:
-      packages: write
-    timeout-minutes: 30
-    steps:
-      - name: Set lowercase owner
-        run: echo "OWNER=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Create multi-architecture manifest
-        run: |
-          set -euo pipefail
-          image="ghcr.io/${OWNER}/aenv-server"
-          version="${GITHUB_REF_NAME}"
-
-          docker buildx imagetools create \
-            --tag "${image}:${version}" \
-            --tag "${image}:latest" \
-            "${image}:${version}-amd64" \
-            "${image}:${version}-arm64"
-
-      - name: Inspect published image
-        run: |
-          docker buildx imagetools inspect \
-            "ghcr.io/${OWNER}/aenv-server:${GITHUB_REF_NAME}"
-
-  docker-publish-pvm:
-    name: Build and push PVM Docker image (amd64)
-    needs: release
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: read
-      packages: write
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Set lowercase owner
-        run: echo "OWNER=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and push PVM image
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: deploy/docker/Dockerfile.agentenv
-          platforms: linux/amd64
-          push: true
-          cache-from: type=gha,scope=agentenv-runtime
-          build-args: |
-            AENV_VIRTUALIZATION_MODE=pvm
-          tags: |
-            ghcr.io/${{ env.OWNER }}/aenv-server:${{ github.ref_name }}-pvm
-            ghcr.io/${{ env.OWNER }}/aenv-server:latest-pvm
+            aenv-server:probe-${{ matrix.mode }}-${{ matrix.arch }}
