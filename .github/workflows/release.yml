@@ -43,20 +43,14 @@ jobs:
                   )
           PY
 
-  build-aenv:
-    name: Build aenv (${{ matrix.asset_name }})
+  build-darwin-cli:
+    name: Build Darwin CLI (${{ matrix.asset_name }})
     needs: validate-version
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-24.04
-            target: ''
-            asset_name: aenv-linux-x86_64
-          - os: ubuntu-24.04-arm
-            target: ''
-            asset_name: aenv-linux-aarch64
           - os: macos-15
             target: x86_64-apple-darwin
             asset_name: aenv-darwin-x86_64
@@ -66,15 +60,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Install system dependencies (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            clang libclang-dev libprotobuf-dev protobuf-compiler
-
       - name: Install system dependencies (macOS)
-        if: runner.os == 'macOS'
         run: brew install protobuf
 
       - uses: dtolnay/rust-toolchain@stable
@@ -84,12 +70,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Build aenv
-        run: cargo build --release -p aenv ${{ matrix.target && format('--target {0}', matrix.target) || '' }}
+        run: cargo build --release --locked -p aenv --target ${{ matrix.target }}
 
       - name: Stage artifact
         run: |
           mkdir -p dist
-          BIN=${{ matrix.target && format('target/{0}/release/aenv', matrix.target) || 'target/release/aenv' }}
+          BIN=target/${{ matrix.target }}/release/aenv
           cp "$BIN" dist/${{ matrix.asset_name }}
           strip dist/${{ matrix.asset_name }} || true
 
@@ -98,8 +84,8 @@ jobs:
           name: ${{ matrix.asset_name }}
           path: dist/${{ matrix.asset_name }}
 
-  build-server:
-    name: Build server (linux-${{ matrix.arch }})
+  build-linux:
+    name: Build Linux release (${{ matrix.arch }})
     needs: validate-version
     runs-on: ${{ matrix.os }}
     strategy:
@@ -108,39 +94,110 @@ jobs:
         include:
           - os: ubuntu-24.04
             arch: x86_64
+            rust_target: x86_64-unknown-linux-musl
             modes: kvm pvm
           - os: ubuntu-24.04-arm
             arch: aarch64
+            rust_target: aarch64-unknown-linux-musl
             modes: kvm
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
 
-      - name: Install system dependencies
+      - name: Install native build prerequisites
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             clang libclang-dev libprotobuf-dev protobuf-compiler
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: native-musl-gcc-${{ matrix.rust_target }}
 
-      - name: Build server binaries
+      - name: Build static Linux binaries
+        env:
+          MUSL_TOOLCHAIN_RELEASE: "20240917"
         run: |
-          cargo build --release -p agentenv --bin server
-          cargo build --release -p uvm-ublk-daemon
+          set -euo pipefail
+
+          work_dir="$(mktemp -d "$RUNNER_TEMP/agentenv-static-release.XXXXXXXX")"
+          trap 'rm -rf "$work_dir"' EXIT
+
+          toolchain_archive_name="${{ matrix.arch }}-linux-musl-native.tgz"
+          toolchain_archive="$work_dir/$toolchain_archive_name"
+          curl -fsSL --retry 5 --retry-all-errors \
+            "https://download.wireguard.com/qemu-test/toolchains/$MUSL_TOOLCHAIN_RELEASE/$toolchain_archive_name" \
+            -o "$toolchain_archive"
+
+          tar -xzf "$toolchain_archive" -C "$work_dir"
+          toolchain_dir="$work_dir/${{ matrix.arch }}-linux-musl-native"
+          toolchain_bin="$toolchain_dir/bin"
+
+          for compiler in gcc g++ ar ranlib; do
+            test -x "$toolchain_bin/$compiler" || {
+              echo "ERROR: musl toolchain is missing bin/$compiler"
+              exit 1
+            }
+          done
+
+          target_env_key="${{ matrix.rust_target }}"
+          target_env_key="${target_env_key//-/_}"
+          target_key="${{ matrix.rust_target }}"
+          target_key="${target_key^^}"
+          target_key="${target_key//-/_}"
+          export "CC_${target_env_key}=$toolchain_bin/gcc"
+          export "CXX_${target_env_key}=$toolchain_bin/g++"
+          export "AR_${target_env_key}=$toolchain_bin/ar"
+          export "RANLIB_${target_env_key}=$toolchain_bin/ranlib"
+          export "CARGO_TARGET_${target_key}_LINKER=$toolchain_bin/gcc"
+          export "BINDGEN_EXTRA_CLANG_ARGS_${target_env_key}=--sysroot=$toolchain_dir"
+
+          "$toolchain_bin/gcc" --version | head -n 1
+          "$toolchain_bin/g++" --version | head -n 1
+
+          cargo build --release --locked --target "${{ matrix.rust_target }}" \
+            -p aenv --bin aenv \
+            -p uvm-ublk-daemon --bin uvm-ublk-daemon \
+            -p agentenv --bin server \
+            --features vendored-openssl
+
+          target_dir="target/${{ matrix.rust_target }}/release"
+          for binary in \
+            "$target_dir/aenv" \
+            "$target_dir/server" \
+            "$target_dir/uvm-ublk-daemon"
+          do
+            test -x "$binary"
+            file "$binary"
+            if readelf -l "$binary" | grep -q INTERP; then
+              echo "ERROR: $binary contains an ELF interpreter"
+              exit 1
+            fi
+            if readelf -d "$binary" 2>&1 | grep -q NEEDED; then
+              echo "ERROR: $binary contains dynamic dependencies"
+              readelf -d "$binary"
+              exit 1
+            fi
+          done
+
+          mkdir -p dist
+          cp "$target_dir/aenv" "dist/aenv-linux-${{ matrix.arch }}"
 
       - name: Stage artifacts
         run: |
           set -euo pipefail
+          TARGET_DIR="target/${{ matrix.rust_target }}/release"
 
           for MODE in ${{ matrix.modes }}; do
             BUNDLE="dist/bundle-$MODE"
             mkdir -p "$BUNDLE/ublk"
-            cp target/release/server "$BUNDLE/server"
+            cp "$TARGET_DIR/server" "$BUNDLE/server"
             strip "$BUNDLE/server"
-            cp target/release/uvm-ublk-daemon "$BUNDLE/ublk/uvm-ublk-daemon"
+            cp "$TARGET_DIR/uvm-ublk-daemon" "$BUNDLE/ublk/uvm-ublk-daemon"
             strip "$BUNDLE/ublk/uvm-ublk-daemon"
             cp config/default.toml "$BUNDLE/default.toml"
 
@@ -184,11 +241,14 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: server-bundles-${{ matrix.arch }}
-          path: dist/aenv-server-linux-${{ matrix.arch }}*.tar.gz
+          path: |
+            dist/aenv-linux-${{ matrix.arch }}
+            dist/aenv-server-linux-${{ matrix.arch }}*.tar.gz
+          if-no-files-found: error
 
   release:
     name: Create GitHub Release
-    needs: [build-aenv, build-server]
+    needs: [build-darwin-cli, build-linux]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -361,6 +421,7 @@ jobs:
           file: deploy/docker/Dockerfile.agentenv
           platforms: linux/amd64
           push: true
+          cache-from: type=gha,scope=agentenv-runtime
           build-args: |
             AENV_VIRTUALIZATION_MODE=pvm
           tags: |
