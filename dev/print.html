@@ -37,7 +37,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-7f050094.js";
+            window.path_to_searchindex_js = "searchindex-41174ef2.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-d7504e7d.js"></script>
@@ -3520,7 +3520,7 @@ local path overrides, not the default dependency catalog.</p>
 <tr><td><code>version</code></td><td>string</td><td>manifest value</td><td>Optional Firecracker release override for auto-download</td></tr>
 <tr><td><code>url</code></td><td>string</td><td>manifest value</td><td>Optional download URL template override with <code>{version}</code> and <code>{arch}</code> placeholders</td></tr>
 <tr><td><code>binary_path</code></td><td>string</td><td>derived from manifest/config version</td><td>Explicit path to a local <code>firecracker</code> binary. Setup skips the Firecracker download and requires this to be a readable, non-empty, executable regular file</td></tr>
-<tr><td><code>boot_args</code></td><td>string</td><td><code>"console=ttyS0 reboot=k panic=1 pci=off init=/init …"</code></td><td>Kernel command line arguments. The shipped default also includes DAMON memory-reclaim parameters; see <code>config/default.toml</code> for the full value.</td></tr>
+<tr><td><code>boot_args</code></td><td>string</td><td><code>"console=ttyS0 reboot=k panic=1 pci=off init=/init …"</code></td><td>Complete kernel command line. The shipped default also includes DAMON memory-reclaim and free-page-reporting parameters; see <code>config/default.toml</code> for the full value.</td></tr>
 <tr><td><code>allowed_extra_boot_args_prefixes</code></td><td>array of strings</td><td><code>[]</code></td><td>Allowed prefixes for <code>extraBootArgs</code> on cold-start sandboxes. If empty, no request-provided extra boot args are appended</td></tr>
 <tr><td><code>socket_timeout_secs</code></td><td>integer</td><td><code>3</code></td><td>Max seconds to wait for the Firecracker API socket</td></tr>
 <tr><td><code>socket_poll_ms</code></td><td>integer</td><td><code>1</code></td><td>Poll interval (ms) for checking socket availability</td></tr>
@@ -4017,6 +4017,45 @@ them. Snapshot P2P publication also skips digest-keyed advertisements for
 local raw layers whose digest is absent from the committed record — the
 record names the compressed bytes, so the raw digest key would never be
 looked up by consumers.</p>
+<h2 id="snapshotmemory_startup_pack"><a class="header" href="#snapshotmemory_startup_pack"><code>[snapshot.memory_startup_pack]</code></a></h2>
+<p>Optional startup-memory trace recording and best-effort prefetch for both
+<code>oss</code> and <code>posix_fs</code> repositories. It is disabled by default. Publishing never
+waits for recording: a completed trace is encoded as a SHA-256-verified
+manifest and attached to the already committed snapshot. Snapshots without a
+descriptor, with a missing/corrupt manifest, or with a failed prefetch always
+resume through the ordinary on-demand path.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Key</th><th>Type</th><th>Default</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>enabled</code></td><td>boolean</td><td><code>false</code></td><td>Record a first-touch trace after capture and persist a manifest when recording succeeds.</td></tr>
+<tr><td><code>record_min_window_ms</code></td><td>integer</td><td><code>200</code></td><td>Minimum recorder observation window after its first read.</td></tr>
+<tr><td><code>record_quiet_ms</code></td><td>integer</td><td><code>300</code></td><td>Stop recording after this quiet interval.</td></tr>
+<tr><td><code>record_max_window_ms</code></td><td>integer</td><td><code>2000</code></td><td>Hard recorder observation-window cap.</td></tr>
+<tr><td><code>record_budget_secs</code></td><td>integer</td><td><code>10</code></td><td>Best-effort recording budget; it never blocks the snapshot publish.</td></tr>
+<tr><td><code>max_pack_bytes</code></td><td>integer</td><td><code>1073741824</code></td><td>Maximum recorded page-data budget and POSIX logical prefetch budget.</td></tr>
+<tr><td><code>consume_enabled</code></td><td>boolean</td><td><code>false</code></td><td>Enable resume-time prefetch; leave disabled for rollout and A/B comparisons.</td></tr>
+<tr><td><code>consume_timeout_secs</code></td><td>integer</td><td><code>30</code></td><td>Deadline for queueing and dispatching further prefetch reads; an in-kernel read may outlive it.</td></tr>
+</tbody>
+</table>
+</div>
+<p>For POSIX, the resolver hands the normal sandbox start path a <code>LocalPath</code>
+manifest. After acquiring the actual shared memory ublk device, the executor
+reads its logical manifest ranges through a buffered device handle, concurrently
+with recovery. This warms the device page cache used by Firecracker, rather
+than the separate cache of lower-layer files. Each run uses one reader and a
+1 MiB buffer; at most four readers run process-wide. In-flight sharing includes
+the manifest digest and live device generation.</p>
+<p>Cancellation and the time budget stop dispatch of subsequent reads. An already
+executing kernel read cannot be interrupted. Stop and retry wait up to the sandbox
+socket timeout for prefetch cleanup; after that it continues in the background,
+retaining the device lease until the read finishes. <code>O_DIRECT</code>
+(<code>io_engine = 2</code>) remains explicitly skipped pending validation of that lower-I/O
+configuration with device prefetch; this is not a claim that device page cache
+is bypassed. The configured I/O engine is never changed. OSS retains its existing
+physical-range planner and executor. Prefetch is not a correctness dependency.</p>
 <h2 id="backendposix_fs"><a class="header" href="#backendposix_fs"><code>[backend.posix_fs]</code></a></h2>
 <p>POSIX filesystem-backed snapshot repository configuration. This section is used when <code>snapshot.repository_backend = "posix_fs"</code>.</p>
 <div class="table-wrapper">
@@ -5475,7 +5514,7 @@ delete template-backed sandboxes while keeping proxy lookup state in sync.</li>
 <li>Provision host access once as root with <code>server --setup-host --runtime-user &lt;user&gt; --runtime-group &lt;group&gt;</code>. The group is the runtime service group: it
 owns AgentENV state and receives ublk device access. Normal server startup
 performs validation only and never invokes <code>sudo</code>.</li>
-<li>Host setup installs a udev rule for <code>/dev/ublk-control</code>, <code>/dev/ublkc*</code>, and <code>/dev/ublkb*</code>, so the runtime group can access the control and dynamic device nodes.</li>
+<li>Host setup installs a udev rule for <code>/dev/ublk-control</code>, <code>/dev/ublkc*</code>, and <code>/dev/ublkb*</code>, so the runtime group can access the control and dynamic device nodes. The same rule sets the I/O scheduler of each <code>/dev/ublkb*</code> to <code>none</code>.</li>
 <li>Update <code>config/default.toml</code> paths, or point <code>AENV_CONFIG_PATH</code> to a custom config file.</li>
 <li>Ensure <code>/dev/kvm</code> is accessible by the runtime user and the configured
 virtualization mode matches the host modules.</li>

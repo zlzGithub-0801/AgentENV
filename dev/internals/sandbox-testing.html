@@ -36,7 +36,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-7f050094.js";
+            window.path_to_searchindex_js = "../searchindex-41174ef2.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-d7504e7d.js"></script>
@@ -867,7 +867,7 @@ delete template-backed sandboxes while keeping proxy lookup state in sync.</li>
 <li>Provision host access once as root with <code>server --setup-host --runtime-user &lt;user&gt; --runtime-group &lt;group&gt;</code>. The group is the runtime service group: it
 owns AgentENV state and receives ublk device access. Normal server startup
 performs validation only and never invokes <code>sudo</code>.</li>
-<li>Host setup installs a udev rule for <code>/dev/ublk-control</code>, <code>/dev/ublkc*</code>, and <code>/dev/ublkb*</code>, so the runtime group can access the control and dynamic device nodes.</li>
+<li>Host setup installs a udev rule for <code>/dev/ublk-control</code>, <code>/dev/ublkc*</code>, and <code>/dev/ublkb*</code>, so the runtime group can access the control and dynamic device nodes. The same rule sets the I/O scheduler of each <code>/dev/ublkb*</code> to <code>none</code>.</li>
 <li>Update <code>config/default.toml</code> paths, or point <code>AENV_CONFIG_PATH</code> to a custom config file.</li>
 <li>Ensure <code>/dev/kvm</code> is accessible by the runtime user and the configured
 virtualization mode matches the host modules.</li>
