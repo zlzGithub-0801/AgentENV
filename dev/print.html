@@ -37,7 +37,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-46080746.js";
+            window.path_to_searchindex_js = "searchindex-5aa7c554.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-d7504e7d.js"></script>
@@ -3665,7 +3665,7 @@ list, e.g. <code>try_referrers_overlaybd_prefixes = ["myregistry.azurecr.io/"]</
 each pass reconciles metadata from the on-disk source configs and then deletes
 hard-commit objects that are no longer rooted by source configs, held by
 image-cache leases, or referenced by the in-process running set. Committed
-snapshots are durable SnapshotRepository state and do not pin ImageCache
+snapshots are durable repository state and do not pin ImageCache
 commits. With <code>capacity_gb</code> set, GC first evicts least-recently-used source
 configs over the high watermark so hard-commit GC can reclaim what they unrooted.</p>
 <div class="table-wrapper">
@@ -5667,10 +5667,10 @@ paths and runtime-ready overlaybd image configs.</li>
 </ul>
 </li>
 <li>
-<p><code>SnapshotRepository</code> / <code>SnapshotRuntimeResolver</code>
-(<code>src/snapshot/repository/interfaces.rs</code>)</p>
+<p><code>Repository</code> / <code>SnapshotRuntimeResolver</code>
+(<code>src/repository/interfaces.rs</code>)</p>
 <ul>
-<li><code>SnapshotRepository</code> owns committed durable state.</li>
+<li><code>Repository</code> owns committed durable state.</li>
 <li><code>SnapshotRuntimeResolver</code> turns committed state into node-local runnable
 paths.</li>
 </ul>
@@ -5836,7 +5836,7 @@ across sandbox capture, publish, resolve, launch, and rebuild flows, including:<
 </ul>
 <p><code>crates/e2e-tests/tests/snapshot_oss_e2e_test.rs</code> covers OSS-backed snapshot publication,
 resolution, alias cleanup, missing managed-layer failure modes, and deletion.</p>
-<p>Repository/backend unit tests under <code>src/snapshot/repository/backends/</code> cover:</p>
+<p>Repository/backend unit tests under <code>src/repository/backends/</code> cover:</p>
 <ul>
 <li>artifact import</li>
 <li>alias handling</li>
@@ -5920,7 +5920,7 @@ builds or prevent server startup.</p>
 <tr><td><code>firecracker.serial_dir</code></td><td><code>$AENV_HOME/logs/serial</code></td><td><code>src/sandbox/firecracker/*</code></td><td>Durable Firecracker stdout/stderr root, grouped by sandbox ID. An explicit <code>[firecracker].serial_dir</code> overrides the root.</td></tr>
 <tr><td><code>managed_snapshot_root</code></td><td><code>&lt;firecracker-work-base&gt;/managed-snapshots</code></td><td><code>src/sandbox/firecracker/*</code></td><td>In-process live snapshot artifact root used to keep captured snapshots alive until publish or drop.</td></tr>
 <tr><td><code>persisted_sandbox_store_path</code></td><td><code>$AENV_HOME/persisted-sandboxes</code></td><td><code>src/orchestrator/persistence/*</code></td><td>Durable paused sandbox records and artifacts.</td></tr>
-<tr><td><code>snapshot_store</code></td><td><code>$AENV_HOME/snapshot-store</code></td><td><code>src/snapshot/repository/*</code></td><td>Durable committed snapshot repository root. The configured backend uses <code>&lt;snapshot_store&gt;/repository</code>. Relative explicit paths are resolved against the config file directory.</td></tr>
+<tr><td><code>snapshot_store</code></td><td><code>$AENV_HOME/snapshot-store</code></td><td><code>src/repository/*</code></td><td>Durable committed snapshot repository root. The configured backend uses <code>&lt;snapshot_store&gt;/repository</code>. Relative explicit paths are resolved against the config file directory.</td></tr>
 <tr><td><code>snapshot.local_cache_path</code></td><td><code>$AENV_HOME/snapshot-local-cache</code></td><td><code>src/snapshot/artifact_cache.rs</code>, runtime resolvers</td><td>Node-local cache for materialized runtime artifacts. Relative explicit paths are resolved against the config file directory.</td></tr>
 <tr><td><code>image.cache.root_dir</code></td><td><code>$AENV_HOME/image-cache</code></td><td><code>src/image/*</code>, overlaybd runtime</td><td>Node-local image cache root. Contains <code>configs/</code>, <code>indexes/</code>, <code>commits/</code>, and <code>remote-blocks/</code>. The offline C++ tools own isolated sibling cache roots: <code>convert-blocks/</code> (<code>overlaybd-apply</code>) and <code>resize-blocks/</code> (<code>overlaybd-resize</code>).</td></tr>
 <tr><td><code>p2p.store_dir</code></td><td><code>$AENV_HOME/p2p/store</code></td><td><code>src/p2p/*</code>, <code>src/cfg.rs</code></td><td>Local store for P2P artifact transport backends. Relative explicit paths are resolved against the config file directory.</td></tr>
@@ -6045,7 +6045,7 @@ Firecracker manifest with node-local paths, and resolves the committed
 </table>
 </div>
 <h2 id="snapshot-repository"><a class="header" href="#snapshot-repository">Snapshot Repository</a></h2>
-<p>Owned by <code>src/snapshot/repository/*</code> and <code>src/snapshot/types/*</code>.</p>
+<p>Owned by <code>src/repository/*</code> and <code>src/snapshot/types/*</code>.</p>
 <div class="table-wrapper">
 <table>
 <thead>
@@ -6150,7 +6150,7 @@ Firecracker manifest with node-local paths, and resolves the committed
 <li>Snapshot repository artifacts are durable user-visible state. Do not delete them from node-local GC code.</li>
 <li>Paused sandbox artifacts are durable only for the paused sandbox that owns them. Do not treat them as committed snapshots.</li>
 <li>Runtime <code>image.json</code> files under snapshot local cache or ublk runtime dirs are derived artifacts. They should be rebuildable from committed metadata or source image configs.</li>
-<li>Node-local <code>image-cache</code> artifacts are disposable cache, but content-addressed commits may be expensive to regenerate. The metadata-backed GC only reclaims commits no longer rooted by on-disk source configs, held by image-cache leases, or referenced by the in-process running set. Committed snapshots are durable SnapshotRepository state and do not pin ImageCache commits. See <code>[image.cache.gc]</code> in the configuration reference for scheduling.</li>
+<li>Node-local <code>image-cache</code> artifacts are disposable cache, but content-addressed commits may be expensive to regenerate. The metadata-backed GC only reclaims commits no longer rooted by on-disk source configs, held by image-cache leases, or referenced by the in-process running set. Committed snapshots are durable repository state and do not pin ImageCache commits. See <code>[image.cache.gc]</code> in the configuration reference for scheduling.</li>
 <li>P2P store contents are node-local and optional. Unpublish removes the local catalog entry and related blobs; clearing the store only affects peer-to-peer sharing and may require republishing or refetching artifacts.</li>
 <li>Logs and dependency downloads are operational artifacts. They are not part of sandbox or snapshot correctness, but may require separate retention policy outside image-cache GC.</li>
 </ul>

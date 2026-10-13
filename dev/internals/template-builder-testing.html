@@ -36,7 +36,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-46080746.js";
+            window.path_to_searchindex_js = "../searchindex-5aa7c554.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-d7504e7d.js"></script>
@@ -243,10 +243,10 @@ paths and runtime-ready overlaybd image configs.</li>
 </ul>
 </li>
 <li>
-<p><code>SnapshotRepository</code> / <code>SnapshotRuntimeResolver</code>
-(<code>src/snapshot/repository/interfaces.rs</code>)</p>
+<p><code>Repository</code> / <code>SnapshotRuntimeResolver</code>
+(<code>src/repository/interfaces.rs</code>)</p>
 <ul>
-<li><code>SnapshotRepository</code> owns committed durable state.</li>
+<li><code>Repository</code> owns committed durable state.</li>
 <li><code>SnapshotRuntimeResolver</code> turns committed state into node-local runnable
 paths.</li>
 </ul>
@@ -412,7 +412,7 @@ across sandbox capture, publish, resolve, launch, and rebuild flows, including:<
 </ul>
 <p><code>crates/e2e-tests/tests/snapshot_oss_e2e_test.rs</code> covers OSS-backed snapshot publication,
 resolution, alias cleanup, missing managed-layer failure modes, and deletion.</p>
-<p>Repository/backend unit tests under <code>src/snapshot/repository/backends/</code> cover:</p>
+<p>Repository/backend unit tests under <code>src/repository/backends/</code> cover:</p>
 <ul>
 <li>artifact import</li>
 <li>alias handling</li>
