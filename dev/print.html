@@ -37,7 +37,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-5aa7c554.js";
+            window.path_to_searchindex_js = "searchindex-655af913.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-d7504e7d.js"></script>
@@ -3544,6 +3544,21 @@ local path overrides, not the default dependency catalog.</p>
 </tbody>
 </table>
 </div>
+<h2 id="overlaybd"><a class="header" href="#overlaybd"><code>[overlaybd]</code></a></h2>
+<p>Optional override for the OverlayBD tools release that setup downloads. When the
+section is omitted, the release in <code>config/deps_manifest.toml</code> is used.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Key</th><th>Type</th><th>Default</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>version</code></td><td>string</td><td>manifest value</td><td>OverlayBD tools release; required when the section is set</td></tr>
+<tr><td><code>package_url</code></td><td>string</td><td>manifest value</td><td>Download URL template for the tools archive, with <code>{version}</code> and <code>{arch}</code> placeholders</td></tr>
+<tr><td><code>url</code></td><td>string</td><td>unset</td><td>Fallback for <code>package_url</code></td></tr>
+</tbody>
+</table>
+</div>
 <h2 id="tools"><a class="header" href="#tools"><code>[tools]</code></a></h2>
 <p>Tools drive image used to boot the AgentENV control plane inside each microVM.
 The default release is selected automatically; most deployments can leave this section unchanged.</p>
@@ -3592,6 +3607,7 @@ and <code>node:20</code></li>
 </thead>
 <tbody>
 <tr><td><code>default_image</code></td><td>string</td><td><code>ubuntu:24.04</code></td><td>Image used when template builds omit <code>fromImage</code></td></tr>
+<tr><td><code>convert_standard_oci</code></td><td>boolean</td><td><code>true</code></td><td>Convert standard OCI tar layers into local OverlayBD commits. Set <code>false</code> to require OverlayBD-native images or referrers and fail fast otherwise</td></tr>
 <tr><td><code>search_registries</code></td><td>array of strings</td><td><code>["docker.io", "ghcr.io"]</code></td><td>Registries tried when resolving short image references</td></tr>
 <tr><td><code>allowed_registries</code></td><td>array of strings</td><td>unset (no restriction)</td><td>Whitelist of registry hosts (e.g. <code>docker.io</code>, <code>registry.example.com:5000</code>). <strong>Omitting the key</strong> imposes no restriction; an <strong>explicit empty list <code>[]</code></strong> denies every registry. When set to a non-empty list, only references whose registry host is in the list resolve; any other host is rejected as a client (4xx, <code>ImageReferenceError</code>) error. See <em>How the three registry settings interact</em> below.</td></tr>
 <tr><td><code>try_referrers_overlaybd_prefixes</code></td><td>array of strings</td><td><code>[]</code></td><td>Image reference prefixes for which AgentENV tries OCI Referrers API via <code>regctl</code> for an overlaybd-native artifact before converting a standard OCI image locally. Prefixes are matched with simple <code>starts_with</code>; include the trailing slash yourself, for example <code>registry.example.com/</code> or <code>registry.example.com/team/</code>. Requires <code>regctl</code> on <code>PATH</code>; lookup failures fall back to the source image.</td></tr>
@@ -3774,6 +3790,22 @@ egress destinations regardless of <code>always_denied_cidrs</code>.</p>
 </tbody>
 </table>
 </div>
+<h2 id="machinedisk_rate_limit"><a class="header" href="#machinedisk_rate_limit"><code>[machine.disk_rate_limit]</code></a></h2>
+<p>Per-sandbox disk I/O limits, applied through Firecracker’s virtio-blk rate limiter.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Key</th><th>Type</th><th>Default</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>enabled</code></td><td>boolean</td><td><code>false</code></td><td>Enable per-sandbox disk I/O rate limiting</td></tr>
+<tr><td><code>bandwidth_bytes_per_sec</code></td><td>integer</td><td><code>0</code></td><td>Sustained disk bandwidth limit in bytes per second; <code>0</code> means unlimited</td></tr>
+<tr><td><code>bandwidth_burst_bytes</code></td><td>integer</td><td><code>0</code></td><td>One-time bandwidth burst in bytes, granted once when the VM starts (Firecracker’s <code>one_time_burst</code>). It is consumed before the sustained bucket and never replenished, so it only absorbs the initial I/O spike. Requires <code>bandwidth_bytes_per_sec</code></td></tr>
+<tr><td><code>iops</code></td><td>integer</td><td><code>0</code></td><td>Sustained IOPS limit; <code>0</code> means unlimited</td></tr>
+<tr><td><code>iops_burst</code></td><td>integer</td><td><code>0</code></td><td>One-time IOPS burst, granted once when the VM starts. Consumed before the sustained bucket and never replenished. Requires <code>iops</code></td></tr>
+</tbody>
+</table>
+</div>
 <h2 id="envd"><a class="header" href="#envd"><code>[envd]</code></a></h2>
 <p>In-guest <code>envd</code> daemon settings.</p>
 <div class="table-wrapper">
@@ -3851,8 +3883,11 @@ egress destinations regardless of <code>always_denied_cidrs</code>.</p>
 <tr><th>Section</th><th>Key</th><th>Type</th><th>Default</th><th>Description</th></tr>
 </thead>
 <tbody>
+<tr><td><code>[pool.network]</code></td><td><code>enabled</code></td><td>boolean</td><td><code>true</code></td><td>When <code>false</code>, disables the network-slot maintenance worker; slots are still created on demand</td></tr>
 <tr><td><code>[pool.network]</code></td><td><code>maintenance_enabled</code></td><td>boolean</td><td><code>true</code></td><td>Enable the background network-slot maintenance worker</td></tr>
+<tr><td><code>[pool.network]</code></td><td><code>startup_prewarm</code></td><td>boolean</td><td><code>true</code></td><td>Accepted but currently unused</td></tr>
 <tr><td><code>[pool.block]</code></td><td><code>enabled</code></td><td>boolean</td><td><code>true</code></td><td>Enable the ublk overlaybd warm-device pool</td></tr>
+<tr><td><code>[pool.block]</code></td><td><code>maintenance_enabled</code></td><td>boolean</td><td><code>true</code></td><td>Ignored: the block pool always refills at request time, because the reusable device shape depends on the image and size</td></tr>
 <tr><td><code>[pool.block]</code></td><td><code>startup_prewarm</code></td><td>boolean</td><td>capability-based</td><td>Prewarm block devices after the first reusable image shape is known. When omitted, it is enabled only if the kernel supports <code>UBLK_F_UPDATE_SIZE</code>; an explicit value overrides detection</td></tr>
 <tr><td><code>[pool.firecracker]</code></td><td><code>enabled</code></td><td>boolean</td><td><code>true</code></td><td>Enable pre-spawned Firecracker processes for snapshot resume</td></tr>
 <tr><td><code>[pool.firecracker]</code></td><td><code>maintenance_enabled</code></td><td>boolean</td><td><code>true</code></td><td>Enable the background Firecracker process maintenance worker</td></tr>
@@ -4164,6 +4199,7 @@ host sysctls; otherwise configure these kernel parameters on the host.</p>
 <tr><td><code>runtime_upper_mode</code></td><td>string</td><td><code>"hybridLogStructured"</code></td><td>Runtime upper format for newly materialized writable rootfs OverlayBD images. Supported values are <code>"logStructured"</code>, <code>"hybridLogStructured"</code>, and <code>"sparse"</code>. Existing source uppers keep their own mode</td></tr>
 <tr><td><code>allow_shrink</code></td><td>boolean</td><td><code>false</code></td><td>Allows an explicit cold-start <code>diskSizeMB</code> smaller than the source rootfs. Explicit sizes use MiB and must be divisible by 1024. Growth is always allowed; snapshot resume never resizes.</td></tr>
 <tr><td><code>resize_timeout_secs</code></td><td>integer</td><td><code>120</code></td><td>Timeout in seconds for the cold-start OverlayBD resize tool. Must be greater than zero.</td></tr>
+<tr><td><code>remote_io_workers</code></td><td>integer</td><td><code>4</code></td><td>Worker threads of the overlaybd runtime’s dedicated remote-I/O runtime (OSS and registry downloads), written as <code>remoteIoWorkers</code> into generated overlaybd global configs. Must be greater than zero.</td></tr>
 <tr><td><code>download_enable</code></td><td>boolean</td><td><code>false</code></td><td>Enables overlaybd layer-level background download for remote layers</td></tr>
 <tr><td><code>p2p_lookup_timeout_ms</code></td><td>integer</td><td><code>300</code></td><td>Timeout for one foreground Overlaybd descriptor lookup through the localhost P2P HTTP facade. Timeout is treated as a cacheable miss.</td></tr>
 <tr><td><code>p2p_fetch_range_timeout_ms</code></td><td>integer</td><td><code>2000</code></td><td>Timeout for one foreground Overlaybd range fetch through the localhost P2P HTTP facade before falling back to the origin registry.</td></tr>
@@ -5667,8 +5703,8 @@ paths and runtime-ready overlaybd image configs.</li>
 </ul>
 </li>
 <li>
-<p><code>Repository</code> / <code>SnapshotRuntimeResolver</code>
-(<code>src/repository/interfaces.rs</code>)</p>
+<p><code>Repository</code> (<code>src/repository/interfaces.rs</code>) /
+<code>SnapshotRuntimeResolver</code> (<code>src/snapshot/resolver.rs</code>)</p>
 <ul>
 <li><code>Repository</code> owns committed durable state.</li>
 <li><code>SnapshotRuntimeResolver</code> turns committed state into node-local runnable
@@ -5836,7 +5872,8 @@ across sandbox capture, publish, resolve, launch, and rebuild flows, including:<
 </ul>
 <p><code>crates/e2e-tests/tests/snapshot_oss_e2e_test.rs</code> covers OSS-backed snapshot publication,
 resolution, alias cleanup, missing managed-layer failure modes, and deletion.</p>
-<p>Repository/backend unit tests under <code>src/repository/backends/</code> cover:</p>
+<p>Snapshot storage unit tests under <code>src/snapshot/backends/</code> and
+<code>src/snapshot/store/</code> cover, against a POSIX repository:</p>
 <ul>
 <li>artifact import</li>
 <li>alias handling</li>
@@ -6052,11 +6089,13 @@ Firecracker manifest with node-local paths, and resolves the committed
 <tr><th>Artifact</th><th>Location</th><th>Contents</th><th>Purpose</th><th>Lifecycle</th><th>Rebuildable</th></tr>
 </thead>
 <tbody>
-<tr><td>Snapshot records</td><td>POSIX: <code>&lt;snapshot_store&gt;/repository/catalog/records/{id}.json</code>; OSS: <code>catalog/records/{id}.json</code></td><td>Snapshot ID, alias, source, resources, build status, committed logical metadata</td><td>Durable user-visible snapshot/template metadata</td><td>Created before template build or at publish. Updated when committed or errored. Deleted by snapshot delete.</td><td>No.</td></tr>
-<tr><td>Snapshot aliases</td><td>POSIX: <code>&lt;snapshot_store&gt;/repository/catalog/aliases/{alias}</code>; OSS: <code>catalog/aliases/{alias}.json</code></td><td>Alias-to-snapshot binding</td><td>Name lookup for templates/snapshots</td><td>Bound during create/publish with conflict checks. Deleted with record cleanup.</td><td>Partially, from records if aliases are still recorded.</td></tr>
+<tr><td>Snapshot records</td><td>POSIX: <code>&lt;snapshot_store&gt;/repository/catalog/records/{id}.json</code>; OSS: <code>catalog/records/{id}.json</code></td><td>Snapshot ID, alias, source, resources, build status, committed logical metadata</td><td>Durable user-visible snapshot/template metadata</td><td>Shared documents written by <code>src/snapshot/catalog.rs</code>. Created before template build or at publish. Updated when committed or errored. Snapshot delete marks it <code>deleting</code> first, so no startup manifest is attached afterwards, and deletes it last.</td><td>No.</td></tr>
+<tr><td>Snapshot aliases</td><td>POSIX: <code>&lt;snapshot_store&gt;/repository/catalog/aliases/{alias}</code>; OSS: <code>catalog/aliases/{alias}.json</code></td><td>Alias-to-snapshot binding</td><td>Name lookup for templates/snapshots</td><td>Shared documents. Claimed after the record is written; released before the record is deleted. A binding whose record is gone is stale and is removed by the next lookup or claim.</td><td>Partially, from records if aliases are still recorded.</td></tr>
+<tr><td>Shared documents (snapshot records and aliases, volume records and names, build logs, build-cache state)</td><td>Paths named in <code>src/repository/layout.rs</code>. POSIX: one file each, updated under a lock file. OSS: one <code>{name}.json</code> object each. S3 stores replace it only if its ETag is unchanged. Alibaba OSS cannot, so every write holds a lease on the appendable lock object <code>locks/{path}</code> (see <code>src/repository/backends/oss/lease.rs</code>).</td><td>Volume state, reservations, and name bindings; template build logs; the shared build-cache seed</td><td>Updated atomically by the snapshot and volume catalogs and the template builder on every node</td><td>A released lease deletes its lock object. A holder that dies leaves it until a contender takes it over 30 seconds later.</td><td>No.</td></tr>
 <tr><td>Firecracker manifest</td><td>POSIX: <code>&lt;snapshot_store&gt;/repository/snapshots/{id}/firecracker-manifest.json</code>; OSS: <code>artifacts/{id}/firecracker-manifest.json</code></td><td>Firecracker snapshot shape, virtual sizes, attached-drive metadata; path fields are hydrated at runtime</td><td>Runtime manifest template for launching committed snapshots</td><td>Persisted during publish. Removed with per-snapshot artifacts.</td><td>Partially, but kept as durable artifact.</td></tr>
 <tr><td>VM state</td><td>POSIX: <code>&lt;snapshot_store&gt;/repository/snapshots/{id}/vm_state.bin</code>; OSS: <code>artifacts/{id}/vm_state.bin</code></td><td>Firecracker VM state snapshot</td><td>Required to resume committed snapshots</td><td>Copied/uploaded during publish. Removed with per-snapshot artifacts.</td><td>No.</td></tr>
 <tr><td>Managed snapshot layers</td><td>POSIX: <code>&lt;snapshot_store&gt;/repository/managed-layers/{digest}.overlaybd.commit</code>; OSS: <code>managed-layers/{digest}</code></td><td>Content-addressed rootfs, attached-drive, and memory overlaybd commit layers</td><td>Shared immutable layer storage for committed snapshots</td><td>Imported during publish by descriptor or by hashing local descriptor-less layers. Usually not removed with a single snapshot.</td><td>Not from metadata alone; can be re-fetched only if source still exists.</td></tr>
+<tr><td>Staging files</td><td>POSIX: <code>&lt;snapshot_store&gt;/repository/staging/*</code>; OSS: process temp dir</td><td>Dense-exported and recontainerized layers prepared for storage</td><td>On POSIX, the same filesystem as <code>managed-layers/</code>, so a prepared layer is hard-linked in without a copy</td><td>Temporary files, removed once the publish that made them is done. A process that crashes mid-publish leaves its files behind.</td><td>Yes.</td></tr>
 <tr><td>Source-registry publications</td><td><code>SnapshotRecord.committed.disk_publications</code> plus remote OCI registry objects</td><td>Published rootfs/attached-drive image refs and manifest digests</td><td>Lets compatible snapshot deltas live in their source registry</td><td>Created during OSS publish when image publishing is enabled. Rolled back on failure or delete when possible.</td><td>Registry-owned; record is required to locate.</td></tr>
 </tbody>
 </table>
